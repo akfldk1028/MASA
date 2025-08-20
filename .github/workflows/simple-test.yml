@@ -1,0 +1,27 @@
+name: "🧪 Simple Claude Test"
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  simple-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Test Claude Code
+        uses: ./
+        with:
+          prompt: |
+            간단한 Python 계산기 만들어줘:
+            - calculator.py 파일
+            - 더하기, 빼기, 곱하기, 나누기
+            - 간단한 메뉴 시스템
+          allowed_tools: "Write"
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          
+      - name: Show result
+        run: |
+          echo "=== Created file ==="
+          cat calculator.py || echo "File not created"

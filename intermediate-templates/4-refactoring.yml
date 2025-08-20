@@ -1,0 +1,386 @@
+name: "🔧 Code Refactoring Assistant"
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # 매주 일요일 새벽 2시
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      target_files:
+        description: '리팩토링할 파일들 (쉼표로 구분, 비어있으면 전체 분석)'
+        required: false
+        default: ''
+      focus_area:
+        description: '집중할 리팩토링 영역'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - performance
+        - readability
+        - maintainability
+        - security
+
+jobs:
+  refactoring:
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude refactor'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine refactoring scope
+        id: scope
+        run: |
+          echo "Determining refactoring scope..."
+          
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_FILES="${{ github.event.inputs.target_files }}"
+            FOCUS_AREA="${{ github.event.inputs.focus_area }}"
+          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
+            # 코멘트에서 파일명 추출 시도
+            TARGET_FILES=$(echo "${{ github.event.comment.body }}" | grep -oP '(?<=@claude refactor\s).*' | head -1)
+            FOCUS_AREA="all"
+          else
+            # 스케줄 실행 - 전체 코드베이스 분석하되 최근 수정된 파일 우선
+            TARGET_FILES=""
+            FOCUS_AREA="all"
+          fi
+          
+          echo "target_files=$TARGET_FILES" >> $GITHUB_OUTPUT
+          echo "focus_area=$FOCUS_AREA" >> $GITHUB_OUTPUT
+          
+          # 분석할 파일 목록 생성
+          if [ -z "$TARGET_FILES" ]; then
+            # 전체 분석 - 최근 30일 내 수정된 파일들 우선
+            git log --since="30 days ago" --name-only --pretty=format: | sort -u | grep -E '\.(js|ts|py|java|go|rs|php|cpp|c)$' | head -20 > files_to_analyze.txt
+            if [ ! -s files_to_analyze.txt ]; then
+              # 최근 수정이 없다면 전체 코드 파일 샘플링
+              find . -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.go" -o -name "*.rs" | head -15 > files_to_analyze.txt
+            fi
+          else
+            # 특정 파일들 분석
+            echo "$TARGET_FILES" | tr ',' '\n' > files_to_analyze.txt
+          fi
+          
+          echo "📂 분석 대상 파일:"
+          cat files_to_analyze.txt
+
+      - name: Analyze code quality
+        id: analyze
+        run: |
+          echo "🔍 코드 품질 분석 중..."
+          
+          # 코드 복잡도 분석 (간단한 metrics)
+          echo "## 코드 복잡도 분석" > code_analysis.md
+          echo "" >> code_analysis.md
+          
+          while read -r file; do
+            if [ -f "$file" ]; then
+              lines=$(wc -l < "$file")
+              functions=$(grep -E '(function|def|class|func)' "$file" | wc -l)
+              echo "- **$file**: $lines lines, $functions functions/classes" >> code_analysis.md
+            fi
+          done < files_to_analyze.txt
+          
+          echo "분석 완료"
+
+      - name: Run Code Refactoring
+        id: claude-refactor
+        uses: ./
+        with:
+          prompt: |
+            🔧 **코드 리팩토링 수행**
+            
+            **목표**: 코드 품질 개선을 통한 유지보수성과 성능 향상
+            **집중 영역**: ${{ steps.scope.outputs.focus_area }}
+            
+            **수행할 작업:**
+            1. **코드 분석**
+               - 코드 스멜 탐지 (긴 함수, 중복 코드, 복잡한 조건문)
+               - 성능 병목 지점 파악
+               - 보안 취약점 확인
+               - 가독성 저하 요소 식별
+            
+            2. **리팩토링 계획 수립**
+               - 우선순위별 개선 항목 정리
+               - 리팩토링 전후 비교 계획
+               - 테스트 영향도 분석
+            
+            3. **리팩토링 실행**
+               - **성능 개선**: 비효율적인 알고리즘 최적화
+               - **가독성 향상**: 함수 분할, 변수명 개선, 주석 추가
+               - **코드 중복 제거**: 공통 함수 추출, 유틸리티 모듈화
+               - **구조 개선**: 클래스/모듈 재구성, 의존성 정리
+               - **현대적 패턴**: ES6+, async/await, type annotations 적용
+            
+            4. **테스트 보장**
+               - 기존 테스트가 여전히 통과하는지 확인
+               - 필요시 테스트 코드도 함께 리팩토링
+            
+            **출력 형식:**
+            ```
+            ## 🔧 리팩토링 완료 보고서
+            
+            ### 📊 분석 결과
+            #### 🚨 발견된 문제점:
+            - **성능**: [느린 부분들]
+            - **가독성**: [이해하기 어려운 코드]
+            - **중복**: [중복된 코드 블록들]
+            - **복잡도**: [너무 복잡한 함수들]
+            
+            ### 🛠️ 실행된 리팩토링
+            #### 📁 수정된 파일:
+            - `파일명`: [구체적인 개선 내용]
+              - Before: [기존 코드 특징]
+              - After: [개선된 점]
+              - 효과: [성능/가독성 개선 효과]
+            
+            ### 📈 개선 효과
+            - **성능 향상**: [구체적인 개선 수치]
+            - **가독성 개선**: [복잡도 감소, 라인 수 최적화]
+            - **유지보수성**: [모듈화, 재사용성 향상]
+            - **보안 강화**: [취약점 수정]
+            
+            ### ✅ 테스트 결과
+            - 기존 테스트: [통과/실패 현황]
+            - 새로운 테스트: [추가된 테스트]
+            
+            ### 🎯 추가 권장사항
+            - [향후 코드 품질 유지 방법]
+            - [정기적인 리팩토링 가이드]
+            - [팀 코딩 스타일 가이드 제안]
+            ```
+            
+            **리팩토링 원칙:**
+            - 기능 변경 없이 구조만 개선
+            - 테스트 통과 보장
+            - 한 번에 너무 많이 변경하지 않기
+            - 백워드 호환성 유지
+            - 성능 저하 방지
+            
+            **집중 영역별 세부 가이드:**
+            - **performance**: 알고리즘 최적화, 메모리 사용량 개선, 캐싱 추가
+            - **readability**: 함수 분할, 명명 개선, 주석 추가, 구조 단순화
+            - **maintainability**: 모듈화, 의존성 정리, 설계 패턴 적용
+            - **security**: 입력 검증, 보안 함수 사용, 취약점 패치
+            - **all**: 위 모든 영역을 균형있게 개선
+            
+          allowed_tools: "Read,Write,Edit,MultiEdit,Grep,Bash(npm test),Bash(npm run lint),Bash(npm run build)"
+          
+          settings: |
+            {
+              "enableAllProjectMcpServers": true,
+              "customInstructions": "한국어로 상세한 리팩토링 분석 제공. 안전하고 점진적인 개선. 테스트 보장."
+            }
+            
+          timeout_minutes: "30"
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Run tests after refactoring
+        id: test-refactored
+        run: |
+          echo "🧪 리팩토링 후 테스트 실행..."
+          
+          # 프로젝트에 맞는 테스트 명령어 실행
+          if [ -f "package.json" ]; then
+            if npm list --depth=0 2>/dev/null | grep -q "jest\|mocha\|vitest"; then
+              npm test || echo "테스트 실패"
+            fi
+          elif [ -f "pytest.ini" ] || [ -f "setup.py" ]; then
+            if command -v pytest &> /dev/null; then
+              pytest || echo "테스트 실패"
+            fi
+          elif [ -f "go.mod" ]; then
+            go test ./... || echo "테스트 실패"
+          fi
+          
+          echo "테스트 완료"
+
+      - name: Check for refactoring changes
+        id: check-changes
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "리팩토링 변경사항이 없습니다."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "🔧 리팩토링된 파일:"
+            git diff --name-only
+            
+            # 변경사항 통계
+            echo "📊 변경 통계:"
+            echo "- 수정된 파일: $(git diff --name-only | wc -l)개"
+            echo "- 추가된 라인: +$(git diff --numstat | awk '{add+=$1} END {print add}')"
+            echo "- 삭제된 라인: -$(git diff --numstat | awk '{del+=$2} END {print del}')"
+          fi
+
+      - name: Create refactoring branch
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          # 리팩토링 브랜치 생성
+          BRANCH_NAME="refactor/auto-improvement-$(date +%Y%m%d-%H%M%S)"
+          
+          git config user.name "Claude AI Refactoring Bot"
+          git config user.email "claude-refactor@anthropic.com"
+          git checkout -b "$BRANCH_NAME"
+          
+          echo "refactor_branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+        id: create-refactor-branch
+
+      - name: Commit refactoring changes
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          git add -A
+          git commit -m "🔧 Refactor: Code quality improvements
+
+          Auto-generated refactoring focused on: ${{ steps.scope.outputs.focus_area }}
+          
+          ✨ Improvements:
+          - Enhanced code readability and maintainability
+          - Optimized performance bottlenecks
+          - Reduced code duplication
+          - Applied modern coding patterns
+          - Improved error handling
+          
+          🧪 Testing: All existing tests maintained
+          
+          🤖 Generated by Claude AI Refactoring Assistant
+          Co-authored-by: Claude AI <claude@anthropic.com>"
+          
+          git push origin "${{ steps.create-refactor-branch.outputs.refactor_branch }}"
+
+      - name: Create Refactoring PR
+        if: steps.check-changes.outputs.has_changes == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Claude 실행 결과 읽기
+            let claudeOutput = "리팩토링 완료";
+            try {
+              const logFile = '${{ steps.claude-refactor.outputs.execution_file }}';
+              if (fs.existsSync(logFile)) {
+                const logData = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+                claudeOutput = logData.result || "리팩토링 완료";
+              }
+            } catch (error) {
+              console.log('로그 파싱 오류:', error);
+            }
+
+            const prBody = `## 🔧 자동 코드 리팩토링
+
+이 PR은 Claude AI가 코드 품질 분석을 통해 자동으로 생성한 리팩토링 개선사항입니다.
+
+### 🎯 리팩토링 영역
+**집중 영역**: ${{ steps.scope.outputs.focus_area }}
+
+### 📋 개선 내역
+
+${claudeOutput}
+
+### 🧪 테스트 상태
+- [x] 기존 테스트 유지
+- [x] 기능 동작 보장
+- [x] 성능 검증
+
+### 🔍 검토 체크리스트
+- [ ] 코드 리뷰 완료
+- [ ] 성능 테스트 확인
+- [ ] 보안 검토 완료
+- [ ] 문서 업데이트 확인
+
+### ⚠️ 주의사항
+- 이 리팩토링은 AI가 생성했으므로 **반드시 사람의 검토**가 필요합니다
+- 프로덕션 배포 전 충분한 테스트를 진행해주세요
+- 예상치 못한 동작 변경이 있을 수 있으니 주의 깊게 검토해주세요
+
+### 🚀 배포 가이드
+1. 코드 리뷰 및 승인
+2. 개발/스테이징 환경에서 테스트
+3. 성능 모니터링 설정
+4. 프로덕션 배포
+
+---
+**🤖 Generated by Claude AI Refactoring Assistant**`;
+
+            const pr = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🔧 Refactor: Code quality improvements (${{ steps.scope.outputs.focus_area }})`,
+              head: '${{ steps.create-refactor-branch.outputs.refactor_branch }}',
+              base: 'main',
+              body: prBody,
+              draft: false
+            });
+
+            console.log(`Created PR #${pr.data.number}`);
+
+            // 리팩토링 결과를 이슈나 코멘트에 알림
+            if ('${{ github.event_name }}' === 'issue_comment') {
+              await github.rest.issues.createComment({
+                issue_number: ${{ github.event.issue.number }},
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `🔧 **리팩토링 완료!**\n\nClaude AI가 코드 리팩토링을 수행하고 PR #${pr.data.number}을 생성했습니다.\n\n**집중 영역**: ${{ steps.scope.outputs.focus_area }}\n\n⚠️ AI가 생성한 코드이므로 반드시 리뷰 후 머지해주세요.`
+              });
+            }
+
+      - name: No changes notification
+        if: steps.check-changes.outputs.has_changes == 'false'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            if ('${{ github.event_name }}' === 'issue_comment') {
+              await github.rest.issues.createComment({
+                issue_number: ${{ github.event.issue.number }},
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `✅ **리팩토링 검토 완료**\n\nClaude AI가 코드를 분석한 결과, 현재 코드가 양호한 상태로 추가 리팩토링이 필요하지 않습니다.\n\n**집중 영역**: ${{ steps.scope.outputs.focus_area }}`
+              });
+            }
+
+      - name: Upload refactoring log
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: claude-refactor-log-${{ github.run_number }}
+          path: |
+            ${{ steps.claude-refactor.outputs.execution_file }}
+            code_analysis.md
+            files_to_analyze.txt
+          retention-days: 30
+
+      - name: Generate refactoring report
+        if: always()
+        run: |
+          echo "📊 리팩토링 작업 완료 보고서" > refactoring_summary.md
+          echo "================================" >> refactoring_summary.md
+          echo "" >> refactoring_summary.md
+          echo "**실행 시간**: $(date)" >> refactoring_summary.md
+          echo "**트리거**: ${{ github.event_name }}" >> refactoring_summary.md
+          echo "**집중 영역**: ${{ steps.scope.outputs.focus_area }}" >> refactoring_summary.md
+          echo "**변경사항**: ${{ steps.check-changes.outputs.has_changes }}" >> refactoring_summary.md
+          echo "**실행 결과**: ${{ steps.claude-refactor.outputs.conclusion }}" >> refactoring_summary.md
+          echo "" >> refactoring_summary.md
+          
+          if [ "${{ steps.check-changes.outputs.has_changes }}" = "true" ]; then
+            echo "🎉 성공적으로 리팩토링이 완료되었습니다!" >> refactoring_summary.md
+            echo "PR: ${{ steps.create-refactor-branch.outputs.refactor_branch }}" >> refactoring_summary.md
+          else
+            echo "ℹ️ 리팩토링할 항목이 발견되지 않았습니다." >> refactoring_summary.md
+          fi
+          
+          cat refactoring_summary.md

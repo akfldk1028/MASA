@@ -118,7 +118,10 @@ runs:
 
     - name: Install Claude Code
       shell: bash
-      run: curl -fsSL https://claude.ai/install.sh | bash -s 1.0.83
+      run: |
+        curl -fsSL https://claude.ai/install.sh | bash -s 1.0.83
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        export PATH="$HOME/.local/bin:$PATH"
 
     - name: Run Claude Code Action
       shell: bash

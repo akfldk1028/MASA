@@ -1,0 +1,225 @@
+name: "🐛 Bug Fix Assistant"
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  bug-fix:
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'bug')) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude fix'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse issue details
+        id: parse-issue
+        run: |
+          # 이슈 번호와 제목 추출
+          if [ "${{ github.event_name }}" = "issues" ]; then
+            ISSUE_NUMBER="${{ github.event.issue.number }}"
+            ISSUE_TITLE="${{ github.event.issue.title }}"
+            ISSUE_BODY="${{ github.event.issue.body }}"
+          else
+            ISSUE_NUMBER="${{ github.event.issue.number }}"
+            ISSUE_TITLE="${{ github.event.issue.title }}"
+            ISSUE_BODY="${{ github.event.issue.body }}"
+          fi
+          
+          echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          echo "issue_title=$ISSUE_TITLE" >> $GITHUB_OUTPUT
+          
+          # 이슈 내용을 파일로 저장
+          cat > issue_details.txt << 'EOF'
+          Title: $ISSUE_TITLE
+          Number: #$ISSUE_NUMBER
+          Body: $ISSUE_BODY
+          EOF
+
+      - name: Run Bug Analysis & Fix
+        id: claude-fix
+        uses: ./
+        with:
+          prompt: |
+            🐛 **버그 수정 수행**
+            
+            **이슈 정보:**
+            이슈 번호: #${{ steps.parse-issue.outputs.issue_number }}
+            제목: ${{ steps.parse-issue.outputs.issue_title }}
+            
+            **수행할 작업:**
+            1. **버그 분석**: 이슈 내용을 읽고 문제를 파악
+            2. **코드베이스 조사**: 관련 파일들을 찾아서 분석
+            3. **근본 원인 찾기**: 버그의 실제 원인 파악
+            4. **수정 방안 설계**: 안전하고 효과적인 수정 방법 계획
+            5. **코드 수정**: 실제 버그 수정 구현
+            6. **테스트 확인**: 수정이 제대로 작동하는지 검증
+            
+            **출력 형식:**
+            ```
+            ## 🔍 버그 분석 결과
+            
+            ### 📋 문제 요약
+            - **증상**: [발생하는 문제]
+            - **영향 범위**: [어떤 기능이 영향받는지]
+            - **재현 조건**: [언제 발생하는지]
+            
+            ### 🔎 근본 원인
+            - **위치**: [파일명:라인번호]
+            - **원인**: [구체적인 원인 설명]
+            - **왜 발생했는지**: [근본적인 이유]
+            
+            ### 🛠️ 수정 내역
+            #### 변경된 파일:
+            - `파일명`: [수정 내용 요약]
+            
+            #### 수정 상세:
+            [구체적인 수정 사항들]
+            
+            ### ✅ 검증 결과
+            - [수정 후 테스트 결과]
+            - [부작용이 없는지 확인]
+            
+            ### 📝 추가 권장사항
+            - [향후 유사한 버그 방지 방법]
+            ```
+            
+            **주의사항:**
+            - 기존 코드의 동작을 최대한 보존
+            - 최소한의 변경으로 문제 해결
+            - 다른 기능에 영향 주지 않도록 주의
+            - 테스트 코드도 함께 수정/추가할 것
+            
+          allowed_tools: "Read,Write,Edit,MultiEdit,Grep,Bash(npm test),Bash(npm run lint)"
+          
+          settings: |
+            {
+              "enableAllProjectMcpServers": true,
+              "customInstructions": "한국어로 상세한 분석 제공. 안전하고 최소한의 변경으로 버그 수정. 테스트 포함."
+            }
+            
+          timeout_minutes: "20"
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Create fix branch
+        if: steps.claude-fix.outputs.conclusion == 'success'
+        run: |
+          # 브랜치 이름 생성
+          BRANCH_NAME="fix/issue-${{ steps.parse-issue.outputs.issue_number }}"
+          
+          # 브랜치 생성 및 체크아웃
+          git config user.name "Claude AI"
+          git config user.email "claude@anthropic.com"
+          git checkout -b "$BRANCH_NAME"
+          
+          # 변경사항이 있는지 확인
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "변경사항이 없습니다."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          fi
+        id: create-branch
+
+      - name: Commit and push changes
+        if: steps.create-branch.outputs.has_changes == 'true'
+        run: |
+          # 모든 변경사항 커밋
+          git add -A
+          git commit -m "🐛 Fix: ${{ steps.parse-issue.outputs.issue_title }}
+
+          - 이슈 #${{ steps.parse-issue.outputs.issue_number }} 수정
+          - Claude AI가 자동으로 생성한 수정사항
+          
+          Co-authored-by: Claude AI <claude@anthropic.com>"
+          
+          # 원격 브랜치로 푸시
+          git push origin "${{ steps.create-branch.outputs.branch_name }}"
+
+      - name: Create Pull Request
+        if: steps.create-branch.outputs.has_changes == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Claude 실행 결과 읽기
+            let claudeOutput = "버그 수정 완료";
+            try {
+              const logFile = '${{ steps.claude-fix.outputs.execution_file }}';
+              if (fs.existsSync(logFile)) {
+                const logData = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+                claudeOutput = logData.result || "버그 수정 완료";
+              }
+            } catch (error) {
+              console.log('로그 파싱 오류:', error);
+            }
+
+            const prBody = `## 🐛 자동 버그 수정
+            
+이 PR은 Claude AI가 이슈 #${{ steps.parse-issue.outputs.issue_number }}을 분석하고 자동으로 생성한 버그 수정사항입니다.
+
+### 📋 수정 내역
+
+${claudeOutput}
+
+### 🔍 검토 요청
+- [ ] 수정사항이 올바른지 코드 리뷰
+- [ ] 테스트 케이스 실행 및 확인
+- [ ] 부작용이 없는지 확인
+- [ ] 문서 업데이트 필요 여부 확인
+
+### 🤖 AI 생성 안내
+이 수정사항은 AI가 생성했으므로 반드시 사람의 검토가 필요합니다.
+
+---
+Closes #${{ steps.parse-issue.outputs.issue_number }}`;
+
+            const pr = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🐛 Fix: ${{ steps.parse-issue.outputs.issue_title }}`,
+              head: '${{ steps.create-branch.outputs.branch_name }}',
+              base: 'main',
+              body: prBody,
+              draft: true  // 검토를 위해 초안으로 생성
+            });
+
+            // PR 번호를 이슈에 코멘트로 남김
+            await github.rest.issues.createComment({
+              issue_number: ${{ steps.parse-issue.outputs.issue_number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🤖 Claude AI가 이 버그의 수정사항을 분석하고 PR #${pr.data.number}을 생성했습니다.\n\n⚠️ **검토 필수**: AI가 생성한 코드이므로 반드시 사람의 검토 후 머지해주세요.`
+            });
+
+      - name: Comment on failure
+        if: steps.claude-fix.outputs.conclusion == 'failure'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              issue_number: ${{ steps.parse-issue.outputs.issue_number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚨 Claude AI가 이 버그를 자동으로 수정하는데 실패했습니다.\n\n**사람의 수동 개입이 필요합니다.**\n\n로그를 확인하시거나 \`@claude fix\` 코멘트로 다시 시도해보세요.`
+            });
+
+      - name: Upload fix log
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: claude-bugfix-log-${{ github.run_number }}
+          path: ${{ steps.claude-fix.outputs.execution_file }}
+          retention-days: 7

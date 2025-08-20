@@ -1,0 +1,326 @@
+name: "📚 Documentation Assistant"
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - '*.js'
+      - '*.ts'
+      - '*.py'
+      - '*.md'
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: '0 9 * * 1'  # 매주 월요일 오전 9시
+
+jobs:
+  documentation:
+    if: |
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude docs'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect documentation needs
+        id: detect-needs
+        run: |
+          echo "Detecting documentation needs..."
+          
+          # 최근 변경된 코드 파일들 찾기
+          if [ "${{ github.event_name }}" = "push" ]; then
+            git diff --name-only HEAD^ HEAD | grep -E '\.(js|ts|py|java|go|rs)$' > changed_code_files.txt || true
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --name-only origin/${{ github.base_ref }}..HEAD | grep -E '\.(js|ts|py|java|go|rs)$' > changed_code_files.txt || true
+          else
+            # 스케줄 실행이나 수동 실행의 경우 모든 파일 대상
+            find . -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.go" -o -name "*.rs" | head -20 > changed_code_files.txt
+          fi
+          
+          # 문서가 부족한 파일들 확인
+          needs_docs=""
+          if [ -s changed_code_files.txt ]; then
+            needs_docs="true"
+            echo "📝 문서화가 필요한 파일들을 발견했습니다:"
+            cat changed_code_files.txt
+          else
+            needs_docs="false"
+            echo "문서화할 새로운 파일이 없습니다."
+          fi
+          
+          echo "needs_docs=$needs_docs" >> $GITHUB_OUTPUT
+
+      - name: Run Documentation Generator
+        if: steps.detect-needs.outputs.needs_docs == 'true'
+        id: claude-docs
+        uses: ./
+        with:
+          prompt: |
+            📚 **문서화 수행**
+            
+            **목표**: 코드베이스의 문서화 품질을 개선하고 누락된 문서들을 생성
+            
+            **수행할 작업:**
+            1. **README.md 분석 및 개선**
+               - 프로젝트 개요가 명확한지 확인
+               - 설치/실행 방법이 정확한지 검증
+               - 사용 예제가 최신 코드와 일치하는지 확인
+               - API 문서 링크와 기여 가이드 확인
+            
+            2. **API 문서 생성/업데이트**
+               - 모든 public 함수/클래스에 대한 문서
+               - 매개변수, 반환값, 예외 설명
+               - 사용 예제 포함
+            
+            3. **인라인 코드 주석 개선**
+               - 복잡한 로직에 대한 설명 추가
+               - TODO, FIXME, HACK 주석 정리
+               - JSDoc, docstring 등 표준 형식 적용
+            
+            4. **CHANGELOG.md 업데이트**
+               - 최근 변경사항 추가
+               - 버전별 변경 내역 정리
+            
+            5. **개발자 가이드 작성**
+               - 프로젝트 구조 설명
+               - 개발 환경 설정 방법
+               - 코딩 스타일 가이드
+               - 테스트 실행 방법
+            
+            **출력 형식:**
+            ```
+            ## 📚 문서화 완료 보고서
+            
+            ### ✅ 완료된 작업
+            #### 📄 생성/수정된 파일:
+            - `README.md`: [수정 내용]
+            - `API.md`: [생성/수정 내용]
+            - `CHANGELOG.md`: [업데이트 내용]
+            - `CONTRIBUTING.md`: [생성/수정 내용]
+            
+            #### 💬 추가된 코드 주석:
+            - `파일명`: [주석 추가 내용]
+            
+            ### 📊 문서화 통계
+            - 총 문서화된 함수: N개
+            - 새로 생성된 문서: N개
+            - 업데이트된 문서: N개
+            - 추가된 코드 주석: N개
+            
+            ### 🎯 개선 효과
+            - 코드 이해도 향상
+            - 새 개발자 온보딩 개선
+            - API 사용성 향상
+            
+            ### 📝 추가 권장사항
+            - [향후 문서 관리 방법]
+            - [정기적인 문서 업데이트 가이드]
+            ```
+            
+            **주의사항:**
+            - 기존 문서의 톤과 스타일 유지
+            - 코드와 일치하는 정확한 문서 작성
+            - 다국어 지원이 있다면 해당 언어로도 작성
+            - 마크다운 문법 준수
+            
+          allowed_tools: "Read,Write,Edit,MultiEdit,Grep,Bash(npm run test),Bash(git log)"
+          
+          settings: |
+            {
+              "enableAllProjectMcpServers": true,
+              "customInstructions": "전문적이고 명확한 기술 문서 작성. 한국어와 영어 병행. 개발자 친화적인 설명."
+            }
+            
+          timeout_minutes: "25"
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Check for documentation changes
+        if: steps.detect-needs.outputs.needs_docs == 'true'
+        id: check-changes
+        run: |
+          # 문서 변경사항이 있는지 확인
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "문서 변경사항이 없습니다."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "📝 생성/수정된 문서:"
+            git diff --name-only
+          fi
+
+      - name: Commit documentation changes
+        if: steps.check-changes.outputs.has_changes == 'true' && github.event_name != 'pull_request'
+        run: |
+          git config user.name "Claude AI Documentation Bot"
+          git config user.email "claude-docs@anthropic.com"
+          
+          git add -A
+          git commit -m "📚 Docs: Update documentation
+
+          - Auto-generated documentation improvements
+          - Added missing API documentation
+          - Updated code comments and examples
+          - Enhanced README and project guides
+          
+          🤖 Generated by Claude AI
+          Co-authored-by: Claude AI <claude@anthropic.com>"
+          
+          git push origin ${{ github.ref_name }}
+
+      - name: Create documentation PR
+        if: steps.check-changes.outputs.has_changes == 'true' && github.event_name == 'pull_request'
+        run: |
+          # PR의 경우 별도 브랜치에 문서 개선사항 커밋
+          BRANCH_NAME="docs/auto-update-pr-${{ github.event.number }}"
+          
+          git config user.name "Claude AI Documentation Bot"
+          git config user.email "claude-docs@anthropic.com"
+          git checkout -b "$BRANCH_NAME"
+          
+          git add -A
+          git commit -m "📚 Docs: Documentation improvements for PR #${{ github.event.number }}
+
+          Auto-generated documentation updates based on code changes
+          
+          🤖 Generated by Claude AI"
+          
+          git push origin "$BRANCH_NAME"
+          
+          echo "doc_branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+        id: create-doc-pr
+
+      - name: Comment on PR with documentation
+        if: github.event_name == 'pull_request' && steps.check-changes.outputs.has_changes == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Claude 실행 결과 읽기
+            let claudeOutput = "문서화 완료";
+            try {
+              const logFile = '${{ steps.claude-docs.outputs.execution_file }}';
+              if (fs.existsSync(logFile)) {
+                const logData = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+                claudeOutput = logData.result || "문서화 완료";
+              }
+            } catch (error) {
+              console.log('로그 파싱 오류:', error);
+            }
+
+            const comment = `## 📚 자동 문서화 결과
+
+Claude AI가 이 PR의 코드 변경사항을 분석하여 문서를 자동으로 개선했습니다.
+
+### 📋 문서화 내역
+
+${claudeOutput}
+
+### 🔗 문서 개선 브랜치
+별도 브랜치 \`${{ steps.create-doc-pr.outputs.doc_branch }}\`에 문서 개선사항이 커밋되었습니다.
+
+### 📝 다음 단계
+1. 이 PR을 먼저 리뷰하고 머지
+2. 문서 개선 브랜치도 리뷰 후 머지
+3. 또는 이 PR에 문서 변경사항을 포함하여 함께 머지
+
+---
+*🤖 AI가 생성한 문서이므로 검토 후 사용해주세요*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Update project documentation index
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          # docs 디렉토리가 있다면 인덱스 파일 업데이트
+          if [ -d "docs" ]; then
+            echo "📚 문서 인덱스 업데이트 중..."
+            find docs -name "*.md" | sort > docs/INDEX.md.tmp
+            if [ -f "docs/INDEX.md.tmp" ]; then
+              echo "# 📚 문서 인덱스" > docs/INDEX.md
+              echo "" >> docs/INDEX.md
+              echo "이 프로젝트의 모든 문서 목록입니다." >> docs/INDEX.md
+              echo "" >> docs/INDEX.md
+              while read -r file; do
+                filename=$(basename "$file" .md)
+                echo "- [$filename]($file)" >> docs/INDEX.md
+              done < docs/INDEX.md.tmp
+              rm docs/INDEX.md.tmp
+              
+              # 변경사항이 있다면 커밋에 포함
+              git add docs/INDEX.md
+            fi
+          fi
+
+      - name: Generate documentation stats
+        if: always()
+        run: |
+          echo "📊 문서화 통계:"
+          echo "- Markdown 파일: $(find . -name '*.md' | wc -l)개"
+          echo "- README 파일: $(find . -name 'README*' | wc -l)개"
+          echo "- 주석이 있는 코드 파일: $(grep -r '//\|#\|/\*\|"""' --include="*.js" --include="*.ts" --include="*.py" . | cut -d: -f1 | sort -u | wc -l)개"
+
+      - name: Upload documentation log
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: claude-docs-log-${{ github.run_number }}
+          path: ${{ steps.claude-docs.outputs.execution_file }}
+          retention-days: 14
+
+      - name: Comment on manual trigger
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let claudeOutput = "문서화 작업 완료";
+            if (fs.existsSync('${{ steps.claude-docs.outputs.execution_file }}')) {
+              try {
+                const logData = JSON.parse(fs.readFileSync('${{ steps.claude-docs.outputs.execution_file }}', 'utf8'));
+                claudeOutput = logData.result || "문서화 작업 완료";
+              } catch (error) {
+                console.log('로그 파싱 오류:', error);
+              }
+            }
+
+            const hasChanges = '${{ steps.check-changes.outputs.has_changes }}' === 'true';
+            const status = hasChanges ? "✅ 문서 업데이트 완료" : "ℹ️ 문서 업데이트 불필요";
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📚 ${status}
+
+${claudeOutput}
+
+${hasChanges ? '문서가 자동으로 업데이트되었습니다.' : '현재 문서가 최신 상태입니다.'}`
+            });
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "🎉 문서화 워크플로우 완료!"
+          echo "- 트리거: ${{ github.event_name }}"
+          echo "- 문서 변경: ${{ steps.check-changes.outputs.has_changes }}"
+          echo "- 결과: ${{ steps.claude-docs.outputs.conclusion }}"
