@@ -7,6 +7,8 @@ on:
 jobs:
   simple-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Push 권한 추가!
     steps:
       - uses: actions/checkout@v4
       
@@ -25,3 +27,16 @@ jobs:
         run: |
           echo "=== Created file ==="
           cat calculator.py || echo "File not created"
+          
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          
+          if [ -f "calculator.py" ]; then
+            git add calculator.py
+            git commit -m "🤖 Add calculator.py created by Claude"
+            git push
+          else
+            echo "No file to commit"
+          fi
